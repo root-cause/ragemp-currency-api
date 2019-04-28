@@ -1,0 +1,14 @@
+{
+  "name": "currency-api",
+  "version": "1.0.0",
+  "description": "Currency API for RAGE Multiplayer.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/root-cause/ragemp-currency-api.git"
+  },
+  "author": "rootcause",
+  "bugs": {
+    "url": "https://github.com/root-cause/ragemp-currency-api/issues"
+  },
+  "homepage": "https://github.com/root-cause/ragemp-currency-api#readme"
+}
