@@ -1,43 +1,46 @@
 const EventEmitter = require("events");
 
+const SYNC_TYPE_NONE = 0;
+const SYNC_TYPE_EVERYONE = 1;
+const SYNC_TYPE_PLAYER = 2;
+
 class CurrencyScript extends EventEmitter {
+    #currencies = new Map();
+
     constructor() {
         super();
-        this._currencies = {};
     }
 
     /**
      * Adds a currency to the system.
      * @param {String}  key      Currency identifier. (such as vip_tokens)
      * @param {String}  name     Currency's human readable name. (such as VIP Tokens)
-     * @param {Boolean} isShared Whether the currency will use shared data or not. Useful if you want to have a money HUD etc.
-     * @return {Object} The added currency object, will be null if there were any mistakes.
+     * @param {Number}  syncType Sharing type of the currency. (0 = not shared with clients, 1 = shared with everyone, 2 = shared with just the wallet owner)
+     * @return {Object} The added currency object.
      * @fires currencyDefined
      */
-    addCurrency(key, name, isShared) {
+    addCurrency(key, name, syncType) {
         if (typeof key !== "string" || key.length < 1) {
-            console.error(`addCurrency: key was not a string/was an empty string.`);
-            return null;
+            throw new Error("key is not a string/is an empty string");
         } else if (typeof name !== "string" || name.length < 1) {
-            console.error(`addCurrency: name was not a string/was an empty string. (${key})`);
-            return null;
-        } else if (typeof isShared !== "boolean") {
-            console.error(`addCurrency: isShared was not a boolean. (${key})`);
-            return null;
-        } else if (this._currencies.hasOwnProperty(key)) {
-            console.error(`addCurrency: Currency (${key}) already exists.`);
-            return null;
+            throw new Error("name is not a string/is an empty string");
+        } else if (!Number.isInteger(syncType)) {
+            throw new Error("syncType is not an integer");
+        } else if (this.#currencies.has(key)) {
+            throw new Error("a currency with the specified key already exists");
+        } else if (syncType < SYNC_TYPE_NONE || syncType > SYNC_TYPE_PLAYER) {
+            throw new Error("invalid syncType value");
         }
 
-        const syncKey = `currency_${key}`;
-        this._currencies[key] = {
+        const currency = {
             name: name,
-            isShared: isShared,
-            syncKey: syncKey
+            syncType: syncType,
+            syncKey: `currency_${key}`
         };
 
-        this.emit("currencyDefined", key, name, isShared, syncKey);
-        return this._currencies[key];
+        this.#currencies.set(key, currency);
+        this.emit("currencyDefined", key, name, syncType, currency.syncKey);
+        return currency;
     }
 
     /**
@@ -46,55 +49,51 @@ class CurrencyScript extends EventEmitter {
      * @return {Boolean}
      */
     hasCurrency(key) {
-        return this._currencies.hasOwnProperty(key);
+        return this.#currencies.has(key);
     }
 
     /**
      * Returns the specified currency's object.
      * @param  {String} key Currency identifier.
-     * @return {Object}     The currency object, will be undefined if the key isn't registered.
+     * @return {?Object}    The currency object, will be undefined if the key isn't registered.
      */
     getCurrency(key) {
-        return this._currencies[key];
+        return this.#currencies.get(key);
     }
 
     /**
-     * Returns an array of all registered currency identifiers.
-     * @return {String[]}
+     * Returns an iterator of all registered currency identifiers.
+     * @return {Iterator.<String>}
      */
     getAllCurrencies() {
-        return Object.keys(this._currencies);
+        return this.#currencies.keys();
     }
 
     /**
      * Returns the human readable name of the specified currency.
      * @param  {String} key Currency identifier.
-     * @return {String}     Human readable name, will be Invalid Currency if the key isn't registered.
+     * @return {String}     Human readable name, will be "Invalid Currency" if the key isn't registered.
      */
     getCurrencyName(key) {
-        return this.hasCurrency(key) ? this._currencies[key].name : "Invalid Currency";
+        return this.#currencies.get(key)?.name ?? "Invalid Currency";
     }
 
     /**
-     * Returns whether the specified currency is shared or not.
-     * @param  {String} key Currency identifier.
-     * @return {Boolean}
+     * Returns the sync type of the specified currency.
+     * @param   {String} key Currency identifier.
+     * @return  {Number}     Sync type of the currency. (0 = not shared with clients, 1 = shared with everyone, 2 = shared with just the wallet owner)
      */
-    getCurrencyIsShared(key) {
-        return this.hasCurrency(key) ? this._currencies[key].isShared : false;
+    getCurrencySyncType(key) {
+        return this.#currencies.get(key)?.syncType ?? SYNC_TYPE_NONE;
     }
 
     /**
-     * Returns the sync key of the specified currency. Sync key is used with player.setVariable()
+     * Returns the sync key of the specified currency. Sync key is used with player.setVariable() or player.setOwnVariable() depending on sync type.
      * @param  {String} key Currency identifier.
-     * @return {String}     Sync key of the currency, will be null if the key isn't registered.
+     * @return {?String}    Sync key of the currency, will be null if the key isn't registered.
      */
     getCurrencySyncKey(key) {
-        return this.hasCurrency(key) ? this._currencies[key].syncKey : null;
-    }
-
-    _getSyncKeyInternal(key) {
-        return (this.hasCurrency(key) && this._currencies[key].isShared) ? this._currencies[key].syncKey : null;
+        return this.#currencies.get(key)?.syncKey ?? null;
     }
 }
 
@@ -116,36 +115,41 @@ mp.Player.prototype.getWallet = function() {
  * @fires walletReplaced
  */
 mp.Player.prototype.setWallet = function(newWallet) {
-    if (Object.prototype.toString.call(newWallet) === "[object Object]") {
-        const oldWallet = this._wallet;
-        let replacement = {};
-
-        // verify newWallet
-        for (const key in newWallet) {
-            if (currencyScript.hasCurrency(key)) {
-                if (Number.isInteger(newWallet[key])) {
-                    replacement[key] = newWallet[key];
-                } else {
-                    console.log(`Found invalid amount for "${key}" while replacing ${this.name}'s wallet, skipping it.`);
-                }
-            } else {
-                console.log(`Found invalid currency "${key}" while replacing ${this.name}'s wallet, skipping it.`);
-            }
-        }
-
-        this._wallet = replacement;
-
-        // update shared data
-        for (const key in replacement) {
-            const syncKey = currencyScript._getSyncKeyInternal(key);
-            if (syncKey) this.setVariable(syncKey, replacement[key]);
-        }
-
-        currencyScript.emit("walletReplaced", this, oldWallet, replacement);
-        return true;
-    } else {
+    if (Object.prototype.toString.call(newWallet) !== "[object Object]") {
         return false;
     }
+
+    const oldWallet = this._wallet;
+    let replacement = {};
+
+    // skip invalid newWallet items
+    for (const key in newWallet) {
+        if (!currencyScript.hasCurrency(key) || !Number.isInteger(newWallet[key])) {
+            continue;
+        }
+
+        replacement[key] = newWallet[key];
+    }
+
+    this._wallet = replacement;
+
+    // update shared data
+    for (const key in replacement) {
+        const currency = currencyScript.getCurrency(key);
+
+        switch (currency.syncType) {
+            case SYNC_TYPE_EVERYONE:
+                this.setVariable(currency.syncKey, replacement[key]);
+                break;
+
+            case SYNC_TYPE_PLAYER:
+                this.setOwnVariable(currency.syncKey, replacement[key]);
+                break;
+        }
+    }
+
+    currencyScript.emit("walletReplaced", this, oldWallet, replacement);
+    return true;
 };
 
 /**
@@ -165,18 +169,26 @@ mp.Player.prototype.getCurrency = function(currencyKey) {
  * @fires currencyUpdated
  */
 mp.Player.prototype.setCurrency = function(currencyKey, newAmount) {
-    if (currencyScript.hasCurrency(currencyKey) && Number.isInteger(newAmount)) {
-        const syncKey = currencyScript._getSyncKeyInternal(currencyKey);
-        const oldAmount = this.getCurrency(currencyKey);
-
-        this._wallet[currencyKey] = newAmount;
-
-        if (syncKey) this.setVariable(syncKey, newAmount);
-        currencyScript.emit("currencyUpdated", this, currencyKey, oldAmount, newAmount, "setCurrency");
-        return true;
-    } else {
+    const currency = currencyScript.getCurrency(currencyKey);
+    if (currency == null || !Number.isInteger(newAmount)) {
         return false;
     }
+
+    const oldAmount = this.getCurrency(currencyKey);
+    this._wallet[currencyKey] = newAmount;
+
+    switch (currency.syncType) {
+        case SYNC_TYPE_EVERYONE:
+            this.setVariable(currency.syncKey, newAmount);
+            break;
+
+        case SYNC_TYPE_PLAYER:
+            this.setOwnVariable(currency.syncKey, newAmount);
+            break;
+    }
+
+    currencyScript.emit("currencyUpdated", this, currencyKey, oldAmount, newAmount, "setCurrency");
+    return true;
 };
 
 /**
@@ -186,22 +198,30 @@ mp.Player.prototype.setCurrency = function(currencyKey, newAmount) {
  * @return {Boolean}            True if successful, false otherwise.
  */
 mp.Player.prototype.changeCurrency = function(currencyKey, amount) {
-    if (currencyScript.hasCurrency(currencyKey) && Number.isInteger(amount)) {
-        const syncKey = currencyScript._getSyncKeyInternal(currencyKey);
-        const oldAmount = this.getCurrency(currencyKey);
-
-        if (this._wallet.hasOwnProperty(currencyKey)) {
-            this._wallet[currencyKey] += amount;
-        } else {
-            this._wallet[currencyKey] = amount;
-        }
-
-        if (syncKey) this.setVariable(syncKey, this._wallet[currencyKey]);
-        currencyScript.emit("currencyUpdated", this, currencyKey, oldAmount, this._wallet[currencyKey], "changeCurrency");
-        return true;
-    } else {
+    const currency = currencyScript.getCurrency(currencyKey);
+    if (currency == null || !Number.isInteger(amount)) {
         return false;
     }
+
+    const oldAmount = this.getCurrency(currencyKey);
+    if (this._wallet.hasOwnProperty(currencyKey)) {
+        this._wallet[currencyKey] += amount;
+    } else {
+        this._wallet[currencyKey] = amount;
+    }
+
+    switch (currency.syncType) {
+        case SYNC_TYPE_EVERYONE:
+            this.setVariable(currency.syncKey, this._wallet[currencyKey]);
+            break;
+
+        case SYNC_TYPE_PLAYER:
+            this.setOwnVariable(currency.syncKey, this._wallet[currencyKey]);
+            break;
+    }
+
+    currencyScript.emit("currencyUpdated", this, currencyKey, oldAmount, this._wallet[currencyKey], "changeCurrency");
+    return true;
 };
 
 // RAGEMP Events
